@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Orca — AD Attack-Path Map</title>
+<style>
+  :root { --bg:#0b0f1a; --panel:#121829; --line:#233; --fg:#e6edf3; --muted:#8b9bb4;
+          --accent:#4cc9f0; --hi:#f72585; --ok:#43d17a; --warn:#ffb703; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.5 ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif; }
+  header { display:flex; align-items:center; gap:16px; padding:14px 20px;
+           border-bottom:1px solid var(--line); background:var(--panel); }
+  header h1 { font-size:16px; margin:0; letter-spacing:.5px; }
+  header .logo { color:var(--accent); font-weight:700; }
+  header .stat { color:var(--muted); font-size:12px; }
+  .controls { margin-left:auto; display:flex; gap:8px; align-items:center; }
+  select, button { background:#1b2338; color:var(--fg); border:1px solid var(--line);
+                   border-radius:6px; padding:6px 10px; font-size:13px; }
+  button { cursor:pointer; }
+  main { display:grid; grid-template-columns: 1fr 1fr; gap:0; height:calc(100vh - 51px); }
+  .col { overflow:auto; padding:16px 20px; }
+  .col + .col { border-left:1px solid var(--line); }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin:0 0 12px; }
+  .finding { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+             margin-bottom:12px; overflow:hidden; }
+  .finding > summary { cursor:pointer; list-style:none; padding:12px 14px; display:flex;
+                       align-items:center; gap:10px; }
+  .finding > summary::-webkit-details-marker { display:none; }
+  .goal { font-weight:600; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:20px; border:1px solid var(--line); color:var(--muted); }
+  .badge.hi { color:var(--hi); border-color:var(--hi); }
+  .cost { margin-left:auto; color:var(--muted); font-size:12px; }
+  .steps { padding:0 14px 14px; }
+  .step { border-left:2px solid var(--accent); padding:8px 0 8px 14px; margin:8px 0; }
+  .step .tech { font-weight:600; }
+  .step .esc { color:var(--hi); font-size:11px; margin-left:6px; }
+  .step .rel { color:var(--muted); font-size:12px; }
+  .cmd { background:#0a0e17; border:1px solid var(--line); border-radius:6px;
+         padding:8px 10px; margin-top:6px; font-family:ui-monospace,Menlo,Consolas,monospace;
+         font-size:12px; color:#bfe; white-space:pre-wrap; }
+  .rem { color:var(--warn); font-size:12px; margin-top:6px; }
+  #graph { width:100%; height:100%; }
+  .empty { color:var(--muted); }
+  circle.hi { stroke:var(--hi); }
+  text { fill:var(--muted); font-size:10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="logo">▲ ORCA</span> · AD Attack-Path Map</h1>
+  <span class="stat" id="stat">loading…</span>
+  <div class="controls">
+    <label class="stat">Objective</label>
+    <select id="objective">
+      <option value="balanced">Balanced</option>
+      <option value="fastest">Fastest</option>
+      <option value="quietest">Quietest</option>
+      <option value="reliable">Most reliable</option>
+    </select>
+    <button id="refresh">Refresh</button>
+  </div>
+</header>
+<main>
+  <section class="col">
+    <h2>Exploitable paths (ranked)</h2>
+    <div id="findings"><span class="empty">Analyzing…</span></div>
+  </section>
+  <section class="col">
+    <h2>Domain graph</h2>
+    <svg id="graph" viewBox="0 0 600 600"></svg>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+async function j(u){ const r = await fetch(u); return r.json(); }
+
+async function loadStats(){
+  const s = await j('/api/stats');
+  $('#stat').textContent = `${s.nodes} nodes · ${s.facts} facts · foothold: ${(s.seeds||[]).join(', ')||'none'}`;
+}
+
+async function loadFindings(){
+  const obj = $('#objective').value;
+  const fs = await j('/api/findings?objective='+encodeURIComponent(obj));
+  const box = $('#findings');
+  if(!fs || !fs.length){ box.innerHTML = '<span class="empty">No exploitable paths to high-value targets.</span>'; return; }
+  box.innerHTML = '';
+  fs.forEach((f,i) => {
+    const d = document.createElement('details'); d.className='finding'; if(i===0) d.open=true;
+    const steps = (f.steps||[]).map(st => `
+      <div class="step">
+        <div><span class="tech">${esc(st.technique||st.rule)}</span>${st.esc?`<span class="esc">${st.esc}</span>`:''}</div>
+        <div class="rel">${esc(st.from)}${st.to?(' → '+esc(st.to)):''}</div>
+        ${st.command?`<div class="cmd">${esc(st.command)}</div>`:''}
+        ${st.remediation?`<div class="rem">✚ ${esc(st.remediation)}</div>`:''}
+      </div>`).join('');
+    d.innerHTML = `
+      <summary>
+        <span class="badge hi">GOAL</span>
+        <span class="goal">${esc(f.goalName)}</span>
+        <span class="cost">cost ${f.cost.toFixed(2)} · ${(f.steps||[]).length} steps</span>
+      </summary>
+      <div class="steps">${steps}</div>`;
+    box.appendChild(d);
+  });
+}
+
+async function loadGraph(){
+  const g = await j('/api/graph');
+  const svg = $('#graph'); svg.innerHTML='';
+  const N = g.nodes||[], E = g.edges||[];
+  const idx = {}; N.forEach((n,i)=>idx[n.sid]=i);
+  const cx=300, cy=300, R=230;
+  const pos = {};
+  N.forEach((n,i)=>{ const a=2*Math.PI*i/N.length; pos[n.sid]=[cx+R*Math.cos(a), cy+R*Math.sin(a)]; });
+  E.forEach(e=>{ const a=pos[e.from], b=pos[e.to]; if(!a||!b) return;
+    svg.innerHTML += `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="#2a3550" stroke-width="1"/>`; });
+  N.forEach(n=>{ const p=pos[n.sid];
+    svg.innerHTML += `<circle cx="${p[0]}" cy="${p[1]}" r="${n.highValue?9:6}" fill="${n.highValue?'#f72585':'#4cc9f0'}" class="${n.highValue?'hi':''}"/>
+      <text x="${p[0]+10}" y="${p[1]+3}">${esc(n.name||n.sid)}</text>`; });
+}
+
+function esc(s){ return String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function refresh(){ await Promise.all([loadStats(), loadFindings(), loadGraph()]); }
+$('#refresh').onclick = refresh;
+$('#objective').onchange = loadFindings;
+refresh();
+</script>
+</body>
+</html>
