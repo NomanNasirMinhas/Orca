@@ -4,6 +4,6 @@
 *.exe
 orca_dataset.json
 testdata
-*.md
+
 *.log
 package-lock.json
